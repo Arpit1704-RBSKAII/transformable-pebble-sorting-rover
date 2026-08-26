@@ -1,0 +1,73 @@
+/*
+ * main.cpp — PHASE 1 TEST VERSION
+ * --------------------------------
+ * This is a STANDALONE test of motor control only.
+ * It does NOT yet include serial command parsing, arm, gripper,
+ * sorter, or transformation logic - those arrive in later phases.
+ *
+ * What this does:
+ *   Runs a fixed, safe test sequence once at boot:
+ *     forward -> stop -> backward -> stop -> left -> stop -> right -> stop
+ *   with pauses between each so you can visually verify wiring/direction.
+ *
+ * SAFETY: Speeds are intentionally low. Do this test with the robot
+ * propped up on blocks (wheels off the ground) the FIRST time you run it,
+ * in case direction wiring is reversed and it behaves unexpectedly.
+ */
+
+#include <Arduino.h>
+#include "configuration.h"
+#include "motors.h"
+
+// Conservative test speed - well under MAX_MOTOR_SPEED_PERCENT
+static const int TEST_SPEED_PERCENT = 30;
+static const int TEST_MOVE_DURATION_MS = 1500;
+static const int TEST_PAUSE_DURATION_MS = 1000;
+
+void setup() {
+  Serial.begin(SERIAL_BAUD_RATE);
+  delay(500); // allow serial monitor to connect
+  Serial.println("=== Phase 1: ESP32 Motor Control Test ===");
+  Serial.println("Wheels should be OFF THE GROUND for this first run.");
+
+  motorsInit();
+
+  delay(2000); // pause before starting, so you can get hands off the robot
+}
+
+// Runs one direction for a fixed duration, calling motorsUpdate() often
+// so speed ramping actually progresses during the move.
+static void runTestStep(const char* label, void (*action)(int), int speedPercent, int durationMs) {
+  Serial.print("[test] ");
+  Serial.println(label);
+
+  action(speedPercent);
+
+  unsigned long start = millis();
+  while (millis() - start < (unsigned long)durationMs) {
+    motorsUpdate();
+    delay(5);
+  }
+
+  stopRobot();
+  Serial.println("[test] stopped");
+  delay(TEST_PAUSE_DURATION_MS);
+}
+
+void loop() {
+  static bool testRun = false;
+
+  if (!testRun) {
+    runTestStep("Forward", moveForward, TEST_SPEED_PERCENT, TEST_MOVE_DURATION_MS);
+    runTestStep("Backward", moveBackward, TEST_SPEED_PERCENT, TEST_MOVE_DURATION_MS);
+    runTestStep("Turn Left", turnLeft, TEST_SPEED_PERCENT, TEST_MOVE_DURATION_MS);
+    runTestStep("Turn Right", turnRight, TEST_SPEED_PERCENT, TEST_MOVE_DURATION_MS);
+
+    Serial.println("=== Phase 1 test sequence complete ===");
+    Serial.println("If all four directions matched their labels correctly, Phase 1 is verified.");
+    testRun = true;
+  }
+
+  // Idle after test - nothing else happens until Phase 5 adds serial commands.
+  delay(1000);
+}

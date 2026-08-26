@@ -1,0 +1,64 @@
+/*
+ * main.cpp â€” PHASE 5 VERSION
+ * ----------------------------
+ * Switches from the Phase 1-4 automatic canned test sequence to
+ * COMMAND-DRIVEN operation: the ESP32 now boots, initializes every
+ * module, sends READY, and then just services serial commands via
+ * communication.cpp for the rest of its life.
+ *
+ * Phases 1-4 are still fully present and testable - just drive them
+ * manually now via Serial Monitor commands instead of an automatic
+ * sequence. Example commands to type (one per line, Serial Monitor
+ * line ending set to "Newline"):
+ *
+ *   STATUS
+ *   ARM,HOME
+ *   ARM,PICK
+ *   GRIP,OPEN
+ *   GRIP,CLOSE
+ *   SORT,SMALL
+ *   MOVE,FORWARD,30
+ *   STOP
+ *   EMERGENCY,STOP
+ *   EMERGENCY,CLEAR
+ *
+ * SAFETY: Keep the arm/gripper/transform mechanism CLEAR of obstacles
+ * and your hands. Wheels should still be off the ground while testing
+ * MOVE commands until you are confident in direction/speed behavior.
+ */
+
+#include <Arduino.h>
+#include "configuration.h"
+#include "motors.h"
+#include "servos.h"
+#include "gripper.h"
+#include "arm.h"
+#include "communication.h"
+
+void setup() {
+  Serial.begin(SERIAL_BAUD_RATE);
+  delay(500); // allow serial monitor / Python to connect
+
+  // Initialize hardware modules first...
+  motorsInit();
+  servosInit();
+  gripperInit();
+  armInit();
+
+  // ...then communication last, so READY only prints once everything
+  // else is actually safe to command.
+  commInit();
+}
+
+void loop() {
+  // Advance all ramped/async subsystems every loop iteration.
+  motorsUpdate();
+  servosUpdate();
+  gripperUpdate();
+  armUpdate();
+
+  // Read/parse/dispatch any incoming serial command, and report DONE
+  // for any previously accepted async action that has now settled.
+  commUpdate();
+}
+

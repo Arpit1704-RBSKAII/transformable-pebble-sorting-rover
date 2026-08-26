@@ -1,0 +1,94 @@
+// esp32/motors.h
+#ifndef MOTORS_H
+#define MOTORS_H
+
+#include <Arduino.h>
+#include "configuration.h"
+
+class Motors {
+public:
+    Motors();
+    void begin();
+    void moveForward(int speed);   // speed 0..MOTOR_MAX_SPEED
+    void moveBackward(int speed);
+    void turnLeft(int speed);
+    void turnRight(int speed);
+    void stop();
+    void emergencyStop();
+    bool isMoving() const;
+private:
+    bool _moving;
+};
+
+#endif
+
+// esp32/motors.cpp
+#include "motors.h"
+
+Motors::Motors() : _moving(false) {}
+
+void Motors::begin() {
+    // If motor pins not configured, do nothing. This is safe for bench testing.
+    if (MOTOR_LEFT_PWM_PIN >= 0) pinMode(MOTOR_LEFT_PWM_PIN, OUTPUT);
+    if (MOTOR_LEFT_DIR_PIN >= 0) pinMode(MOTOR_LEFT_DIR_PIN, OUTPUT);
+    if (MOTOR_RIGHT_PWM_PIN >= 0) pinMode(MOTOR_RIGHT_PWM_PIN, OUTPUT);
+    if (MOTOR_RIGHT_DIR_PIN >= 0) pinMode(MOTOR_RIGHT_DIR_PIN, OUTPUT);
+}
+
+void Motors::moveForward(int speed) {
+    if (speed < 0) speed = 0;
+    if (speed > MOTOR_MAX_SPEED) speed = MOTOR_MAX_SPEED;
+#if ENABLE_DEBUG_PRINTS
+    Serial.printf("[MOTORS] moveForward speed=%d\n", speed);
+#endif
+    _moving = true;
+    if (MOTOR_LEFT_PWM_PIN >= 0) analogWrite(MOTOR_LEFT_PWM_PIN, speed);
+    if (MOTOR_RIGHT_PWM_PIN >= 0) analogWrite(MOTOR_RIGHT_PWM_PIN, speed);
+}
+
+void Motors::moveBackward(int speed) {
+#if ENABLE_DEBUG_PRINTS
+    Serial.printf("[MOTORS] moveBackward speed=%d\n", speed);
+#endif
+    _moving = true;
+    // Direction control depends on driver wiring; this is a placeholder.
+    if (MOTOR_LEFT_PWM_PIN >= 0) analogWrite(MOTOR_LEFT_PWM_PIN, speed);
+    if (MOTOR_RIGHT_PWM_PIN >= 0) analogWrite(MOTOR_RIGHT_PWM_PIN, speed);
+}
+
+void Motors::turnLeft(int speed) {
+#if ENABLE_DEBUG_PRINTS
+    Serial.printf("[MOTORS] turnLeft speed=%d\n", speed);
+#endif
+    _moving = true;
+    // Example: left stop, right forward
+    if (MOTOR_LEFT_PWM_PIN >= 0) analogWrite(MOTOR_LEFT_PWM_PIN, 0);
+    if (MOTOR_RIGHT_PWM_PIN >= 0) analogWrite(MOTOR_RIGHT_PWM_PIN, speed);
+}
+
+void Motors::turnRight(int speed) {
+#if ENABLE_DEBUG_PRINTS
+    Serial.printf("[MOTORS] turnRight speed=%d\n", speed);
+#endif
+    _moving = true;
+    if (MOTOR_LEFT_PWM_PIN >= 0) analogWrite(MOTOR_LEFT_PWM_PIN, speed);
+    if (MOTOR_RIGHT_PWM_PIN >= 0) analogWrite(MOTOR_RIGHT_PWM_PIN, 0);
+}
+
+void Motors::stop() {
+#if ENABLE_DEBUG_PRINTS
+    Serial.println("[MOTORS] stop");
+#endif
+    _moving = false;
+    if (MOTOR_LEFT_PWM_PIN >= 0) analogWrite(MOTOR_LEFT_PWM_PIN, 0);
+    if (MOTOR_RIGHT_PWM_PIN >= 0) analogWrite(MOTOR_RIGHT_PWM_PIN, 0);
+}
+
+void Motors::emergencyStop() {
+#if ENABLE_DEBUG_PRINTS
+    Serial.println("[MOTORS] emergencyStop");
+#endif
+    stop();
+}
+
+bool Motors::isMoving() const { return _moving; }

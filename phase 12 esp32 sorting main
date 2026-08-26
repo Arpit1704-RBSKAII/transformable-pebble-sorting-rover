@@ -1,0 +1,88 @@
+// main.cpp
+// Minimal example showing serial command parsing and sorter integration.
+// Integrate this into your full ESP32 firmware where other subsystems exist.
+
+#include <Arduino.h>
+#include "configuration.h"
+#include "sorter.h"
+
+Sorter sorter;
+
+void setup() {
+    Serial.begin(SERIAL_BAUD);
+    delay(100);
+#if ENABLE_DEBUG_PRINTS
+    Serial.println("[MAIN] Starting sorter firmware (phase 12)");
+#endif
+    sorter.begin();
+    Serial.println("READY");
+}
+
+String readLineFromSerial() {
+    String line = "";
+    while (Serial.available() > 0) {
+        char c = (char)Serial.read();
+        if (c == '\n' || c == '\r') {
+            if (line.length() > 0) break;
+            else continue;
+        }
+        line += c;
+    }
+    return line;
+}
+
+void processCommand(const String &cmdLine) {
+    // Trim
+    String s = cmdLine;
+    s.trim();
+    if (s.length() == 0) return;
+#if ENABLE_DEBUG_PRINTS
+    Serial.printf("[MAIN] Got: %s\n", s.c_str());
+#endif
+
+    // Very simple CSV split
+    int commaPos = s.indexOf(',');
+    String cmd = (commaPos >= 0) ? s.substring(0, commaPos) : s;
+    cmd.trim();
+    String arg = (commaPos >= 0) ? s.substring(commaPos + 1) : "";
+    arg.trim();
+
+    if (cmd.equalsIgnoreCase("SORT")) {
+        if (arg.length() == 0) {
+            Serial.println("ERROR,NO_SIZE");
+            return;
+        }
+        // Acknowledge BUSY then perform action and send DONE/ERROR
+        Serial.println("BUSY");
+        bool ok = sorter.sortToBin(arg);
+        if (ok) {
+            Serial.println("DONE");
+        } else {
+            Serial.printf("ERROR,SORT_FAILED,%s\n", arg.c_str());
+        }
+    } else if (cmd.equalsIgnoreCase("EMERGENCY")) {
+        // Example: EMERGENCY,STOP
+        if (arg.equalsIgnoreCase("STOP")) {
+            sorter.emergencyStop();
+            Serial.println("DONE");
+        } else {
+            Serial.println("ERROR,UNKNOWN_EMERGENCY_CMD");
+        }
+    } else if (cmd.equalsIgnoreCase("STATUS")) {
+        if (sorter.isBusy()) Serial.println("STATUS,BUSY");
+        else Serial.println("STATUS,READY");
+    } else {
+        Serial.println("ERROR,UNKNOWN_COMMAND");
+    }
+}
+
+void loop() {
+    // Simple non-blocking serial read: collect line if available
+    if (Serial.available() > 0) {
+        String line = readLineFromSerial();
+        if (line.length() > 0) {
+            processCommand(line);
+        }
+    }
+    // other periodic tasks would go here
+}

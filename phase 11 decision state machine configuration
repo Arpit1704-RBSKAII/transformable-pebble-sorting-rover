@@ -1,0 +1,22 @@
+# Add these entries or merge into existing configuration.py
+
+# Decision thresholds
+PICK_CONFIDENCE_THRESHOLD = 0.7       # minimum combined confidence to attempt pick
+SIZE_CONFIDENCE_WEIGHT = 0.6          # weight of size confidence in combined score
+COLOR_CONFIDENCE_WEIGHT = 0.4         # weight of colour confidence in combined score
+
+# Timeouts (seconds)
+COMM_COMMAND_TIMEOUT = 8.0            # wait for DONE for a command
+ARM_MOVE_TIMEOUT = 8.0
+PICK_TIMEOUT = 10.0
+MOVEMENT_TIMEOUT = 10.0
+
+# Operational safety
+ALLOW_PICK_WHILE_MOVING = False       # do not pick while driving
+MIN_CONFIDENCE_TO_CLASSIFY = 0.4      # below this: mark classification as uncertain
+
+# Retry counts
+MAX_PICK_RETRIES = 2
+
+# Logging level
+LOG_VERBOSITY = 1  # 0=errors only, 1=info, 2=debug

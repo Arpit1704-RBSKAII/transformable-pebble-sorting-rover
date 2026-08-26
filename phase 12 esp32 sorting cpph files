@@ -1,0 +1,207 @@
+// sorter.h
+#ifndef SORTER_H
+#define SORTER_H
+
+#include <Arduino.h>
+#include <ESP32Servo.h>
+#include "configuration.h"
+
+class Sorter {
+public:
+    Sorter();
+    void begin();
+    // Request a sort to a size label: "SMALL", "MEDIUM", "LARGE"
+    // Returns true if command accepted (movement started); false if precondition failed.
+    bool sortToBin(const String &sizeLabel);
+
+    // Immediately stop any ongoing motion (used by emergency stop)
+    void emergencyStop();
+
+    // Is sorter currently moving?
+    bool isBusy() const;
+
+private:
+    Servo _servo;
+    bool _busy;
+    int _currentAngle;
+    unsigned long _moveStartMs;
+
+    // Helper: map label to target angle. Returns -1 for unknown label.
+    int _angleForLabel(const String &sizeLabel);
+
+    // Check preconditions (arm home, gripper closed, wheels stopped). Returns true if OK.
+    bool _preconditionsOk(String &errOut);
+
+    // Move servo to angle with incremental steps (blocking, but checks emergency flag)
+    bool _moveToAngle(int targetAngle, String &errOut);
+
+    // Read configured sensor pins (treat -1 as "not configured" meaning pass)
+    bool _readPinSafe(int pin);
+    volatile bool _emergencyFlag;
+};
+
+#endif // SORTER_H
+
+// sorter.cpp
+#include "sorter.h"
+
+Sorter::Sorter() : _busy(false), _currentAngle(SORTER_ANGLE_STOW), _moveStartMs(0), _emergencyFlag(false) {}
+
+void Sorter::begin() {
+    // Attach servo
+    _servo.setPeriodHertz(50); // standard servo freq
+    _servo.attach(SORTER_SERVO_PIN, 500, 2400); // pulse width bounds (may adjust per servo)
+    _servo.write(_currentAngle);
+    delay(200);
+}
+
+bool Sorter::_readPinSafe(int pin) {
+    if (pin < 0) return true; // not configured → treat as OK
+    pinMode(pin, INPUT_PULLUP);
+    // Interpret HIGH as "safe" for these switches; wire accordingly.
+    int val = digitalRead(pin);
+    return (val == HIGH);
+}
+
+bool Sorter::_preconditionsOk(String &errOut) {
+    // Arm home switch
+    if (! _readPinSafe(PIN_ARM_HOME_SWITCH)) {
+        errOut = "ARM_NOT_HOME";
+        return false;
+    }
+    // Gripper closed
+    if (! _readPinSafe(PIN_GRIPPER_CLOSED_SWITCH)) {
+        errOut = "GRIPPER_NOT_CLOSED";
+        return false;
+    }
+    // Wheels stopped (optional)
+    if (PIN_WHEELS_STOPPED_SIGNAL >= 0) {
+        if (! _readPinSafe(PIN_WHEELS_STOPPED_SIGNAL)) {
+            errOut = "WHEELS_NOT_STOPPED";
+            return false;
+        }
+    }
+    // Emergency hardware input
+    if (PIN_EMERGENCY_STOP >= 0) {
+        pinMode(PIN_EMERGENCY_STOP, INPUT_PULLUP);
+        if (digitalRead(PIN_EMERGENCY_STOP) == LOW) { // assume LOW pressed
+            errOut = "EMERGENCY_STOP_ACTIVE";
+            return false;
+        }
+    }
+    return true;
+}
+
+int Sorter::_angleForLabel(const String &sizeLabel) {
+    if (sizeLabel.equalsIgnoreCase("SMALL")) return SORTER_ANGLE_SMALL;
+    if (sizeLabel.equalsIgnoreCase("MEDIUM")) return SORTER_ANGLE_MEDIUM;
+    if (sizeLabel.equalsIgnoreCase("LARGE")) return SORTER_ANGLE_LARGE;
+    if (sizeLabel.equalsIgnoreCase("STOW")) return SORTER_ANGLE_STOW;
+    return -1;
+}
+
+bool Sorter::_moveToAngle(int targetAngle, String &errOut) {
+    if (targetAngle < 0) {
+        errOut = "INVALID_TARGET_ANGLE";
+        return false;
+    }
+    unsigned long startMs = millis();
+    _moveStartMs = startMs;
+    _busy = true;
+
+    int step = (targetAngle > _currentAngle) ? SORTER_MOVE_STEP_DEG : -SORTER_MOVE_STEP_DEG;
+    if (step == 0) {
+        // already at position
+        _busy = false;
+        return true;
+    }
+
+    while (_currentAngle != targetAngle) {
+        if (_emergencyFlag) {
+            errOut = "EMERGENCY_ABORT";
+            _busy = false;
+            return false;
+        }
+        long now = millis();
+        if (now - startMs > SORTER_MOVE_TIMEOUT_MS) {
+            errOut = "TIMEOUT";
+            _busy = false;
+            return false;
+        }
+        // step one increment toward target
+        int next = _currentAngle + step;
+        // clamp to target
+        if ((step > 0 && next > targetAngle) || (step < 0 && next < targetAngle)) {
+            next = targetAngle;
+        }
+        _servo.write(next);
+        _currentAngle = next;
+        delay(SORTER_STEP_DELAY_MS);
+
+        // optional: check mechanical limit or switch here for safety (not implemented)
+    }
+    _busy = false;
+    return true;
+}
+
+bool Sorter::sortToBin(const String &sizeLabel) {
+#if ENABLE_DEBUG_PRINTS
+    Serial.printf("[SORTER] Requested sort to %s\n", sizeLabel.c_str());
+#endif
+
+    // Check preconditions
+    String err;
+    if (! _preconditionsOk(err)) {
+#if ENABLE_DEBUG_PRINTS
+        Serial.printf("[SORTER] Preconditions failed: %s\n", err.c_str());
+#endif
+        // Return false to indicate precondition failed
+        return false;
+    }
+
+    int target = _angleForLabel(sizeLabel);
+    if (target < 0) {
+#if ENABLE_DEBUG_PRINTS
+        Serial.println("[SORTER] Unknown size label");
+#endif
+        return false;
+    }
+
+    // Announce busy and perform movement; the caller (main) is responsible for sending BUSY/DONE tokens.
+    _emergencyFlag = false;
+    String moveErr;
+    bool ok = _moveToAngle(target, moveErr);
+    if (!ok) {
+#if ENABLE_DEBUG_PRINTS
+        Serial.printf("[SORTER] Move failed: %s\n", moveErr.c_str());
+#endif
+        return false;
+    }
+
+    // Optionally return to stow after a short delay (configurable).
+    // Here we stow automatically to prepare for next pick.
+    delay(200);
+    String stowErr;
+    bool stowed = _moveToAngle(SORTER_ANGLE_STOW, stowErr);
+    if (!stowed) {
+#if ENABLE_DEBUG_PRINTS
+        Serial.printf("[SORTER] Stow failed: %s\n", stowErr.c_str());
+#endif
+        return false;
+    }
+    return true;
+}
+
+void Sorter::emergencyStop() {
+    _emergencyFlag = true;
+    // detach servo to remove power or hold command depending on design
+#if ENABLE_DEBUG_PRINTS
+    Serial.println("[SORTER] Emergency stop: detaching servo");
+#endif
+    _servo.detach();
+    _busy = false;
+}
+
+bool Sorter::isBusy() const {
+    return _busy;
+}

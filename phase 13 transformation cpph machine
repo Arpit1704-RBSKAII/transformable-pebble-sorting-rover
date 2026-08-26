@@ -1,0 +1,201 @@
+// transformation.h
+#ifndef TRANSFORMATION_H
+#define TRANSFORMATION_H
+
+#include <Arduino.h>
+#include <ESP32Servo.h>
+#include "configuration.h"
+
+class Transformation {
+public:
+    Transformation();
+    void begin();
+
+    // Starts folding (to ROVER / compact mode). Returns true if accepted (movement started).
+    bool fold();
+
+    // Starts unfolding (to SORTING mode). Returns true if accepted (movement started).
+    bool unfold();
+
+    // Immediately stop any ongoing motion (emergency)
+    void emergencyStop();
+
+    // Returns true if a move is in progress
+    bool isBusy() const;
+
+    // Returns true if the transform is believed folded
+    bool isFolded() const;
+
+private:
+    Servo _servo;
+    volatile bool _busy;
+    volatile bool _emergencyFlag;
+    int _currentAngle;
+
+    bool _preconditionsOk(String &errOut);
+    bool _moveToAngle(int targetAngle, String &errOut);
+    bool _readPinSafe(int pin);
+    bool _checkLimitSwitch(int pin);
+};
+
+#endif // TRANSFORMATION_H
+
+// transformation.cpp
+#include "transformation.h"
+
+Transformation::Transformation() : _busy(false), _emergencyFlag(false), _currentAngle(TRANSFORM_ANGLE_STOW) {}
+
+void Transformation::begin() {
+    _servo.setPeriodHertz(50);
+    _servo.attach(TRANSFORM_SERVO_PIN, 500, 2400);
+    _servo.write(_currentAngle);
+    delay(200);
+}
+
+bool Transformation::_readPinSafe(int pin) {
+    if (pin < 0) return true;
+    pinMode(pin, INPUT_PULLUP);
+    int val = digitalRead(pin);
+    return (val == HIGH);
+}
+
+bool Transformation::_checkLimitSwitch(int pin) {
+    if (pin < 0) return false; // not configured
+    pinMode(pin, INPUT_PULLUP);
+    int val = digitalRead(pin);
+    // assume HIGH means not triggered; LOW means triggered (adjust if your wiring is opposite)
+    return (val == LOW);
+}
+
+bool Transformation::_preconditionsOk(String &errOut) {
+    // Ensure arm is home
+    if (! _readPinSafe(PIN_ARM_HOME_SWITCH)) {
+        errOut = "ARM_NOT_HOME";
+        return false;
+    }
+    // Ensure gripper is closed (safe)
+    if (! _readPinSafe(PIN_GRIPPER_CLOSED_SWITCH)) {
+        errOut = "GRIPPER_NOT_CLOSED";
+        return false;
+    }
+    // Ensure wheels stopped (optional)
+    if (PIN_WHEELS_STOPPED_SIGNAL >= 0) {
+        if (! _readPinSafe(PIN_WHEELS_STOPPED_SIGNAL)) {
+            errOut = "WHEELS_NOT_STOPPED";
+            return false;
+        }
+    }
+    // check hardware emergency
+    if (PIN_EMERGENCY_STOP >= 0) {
+        pinMode(PIN_EMERGENCY_STOP, INPUT_PULLUP);
+        if (digitalRead(PIN_EMERGENCY_STOP) == LOW) { // adjust active polarity if needed
+            errOut = "EMERGENCY_STOP_ACTIVE";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool Transformation::_moveToAngle(int targetAngle, String &errOut) {
+    if (targetAngle < 0) {
+        errOut = "INVALID_TARGET";
+        return false;
+    }
+
+    unsigned long start = millis();
+    _busy = true;
+
+    int step = (targetAngle > _currentAngle) ? TRANSFORM_MOVE_STEP_DEG : -TRANSFORM_MOVE_STEP_DEG;
+    if (step == 0) {
+        _busy = false;
+        return true;
+    }
+
+    while (_currentAngle != targetAngle) {
+        if (_emergencyFlag) {
+            errOut = "EMERGENCY_ABORT";
+            _busy = false;
+            return false;
+        }
+        unsigned long now = millis();
+        if (now - start > TRANSFORM_MOVE_TIMEOUT_MS) {
+            errOut = "TIMEOUT";
+            _busy = false;
+            return false;
+        }
+
+        int next = _currentAngle + step;
+        if ((step > 0 && next > targetAngle) || (step < 0 && next < targetAngle)) {
+            next = targetAngle;
+        }
+        _servo.write(next);
+        _currentAngle = next;
+        delay(TRANSFORM_STEP_DELAY_MS);
+    }
+
+    // after completing move, optionally check limit switch for confirmation
+    _busy = false;
+    return true;
+}
+
+bool Transformation::fold() {
+    String err;
+    if (! _preconditionsOk(err)) {
+        Serial.printf("[TRANSFORM] Preconditions failed: %s\n", err.c_str());
+        return false;
+    }
+    _emergencyFlag = false;
+    int foldedAngle = TRANSFORM_ANGLE_FOLDED;
+    bool ok = _moveToAngle(foldedAngle, err);
+    if (!ok) {
+        Serial.printf("[TRANSFORM] Fold failed: %s\n", err.c_str());
+        return false;
+    }
+    // optional limit switch check
+    if (PIN_TRANSFORM_LIMIT_FOLDED >= 0) {
+        bool triggered = _checkLimitSwitch(PIN_TRANSFORM_LIMIT_FOLDED);
+        if (!triggered) {
+            Serial.println("[TRANSFORM] Warning: folded limit switch not triggered");
+            // do not fail; just warn
+        }
+    }
+    return true;
+}
+
+bool Transformation::unfold() {
+    String err;
+    if (! _preconditionsOk(err)) {
+        Serial.printf("[TRANSFORM] Preconditions failed: %s\n", err.c_str());
+        return false;
+    }
+    _emergencyFlag = false;
+    int stowAngle = TRANSFORM_ANGLE_STOW;
+    bool ok = _moveToAngle(stowAngle, err);
+    if (!ok) {
+        Serial.printf("[TRANSFORM] Unfold failed: %s\n", err.c_str());
+        return false;
+    }
+    if (PIN_TRANSFORM_LIMIT_UNFOLDED >= 0) {
+        bool triggered = _checkLimitSwitch(PIN_TRANSFORM_LIMIT_UNFOLDED);
+        if (!triggered) {
+            Serial.println("[TRANSFORM] Warning: unfolded limit switch not triggered");
+        }
+    }
+    return true;
+}
+
+void Transformation::emergencyStop() {
+    _emergencyFlag = true;
+    _servo.detach();
+    _busy = false;
+}
+
+bool Transformation::isBusy() const {
+    return _busy;
+}
+
+bool Transformation::isFolded() const {
+    if (PIN_TRANSFORM_LIMIT_FOLDED >= 0) return _checkLimitSwitch(PIN_TRANSFORM_LIMIT_FOLDED);
+    // fallback: compare angle
+    return _currentAngle == TRANSFORM_ANGLE_FOLDED;
+}

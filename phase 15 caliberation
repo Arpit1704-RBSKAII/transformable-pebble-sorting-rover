@@ -1,0 +1,120 @@
+# python/calibration.py
+"""
+Simple helper to compute pixel_to_mm by letting you click two points across a known object.
+Usage:
+  python python/calibration.py --image path/to/image.jpg --real_mm 24.26
+It will open a window asking you to click two points across the object's diameter.
+"""
+
+import argparse
+import cv2
+import numpy as np
+
+points = []
+
+def mouse_cb(event, x, y, flags, param):
+    global points
+    if event == cv2.EVENT_LBUTTONDOWN:
+        points.append((x, y))
+        print("Point:", x, y)
+
+def main(image_path, real_mm):
+    img = cv2.imread(image_path)
+    if img is None:
+        print("Failed to load image:", image_path); return
+    clone = img.copy()
+    cv2.namedWindow("calib")
+    cv2.setMouseCallback("calib", mouse_cb)
+    print("Click two points on the image representing the known object diameter. Press 'q' to quit.")
+    while True:
+        disp = clone.copy()
+        for p in points:
+            cv2.circle(disp, p, 4, (0,255,0), -1)
+        if len(points) >= 2:
+            cv2.line(disp, points[0], points[1], (0,0,255), 2)
+            dx = points[0][0] - points[1][0]
+            dy = points[0][1] - points[1][1]
+            pix = (dx*dx + dy*dy)**0.5
+            mm_per_px = real_mm / pix
+            cv2.putText(disp, f"{pix:.1f} px, {mm_per_px:.4f} mm/px", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+        cv2.imshow("calib", disp)
+        key = cv2.waitKey(10) & 0xFF
+        if key == ord('q'):
+            break
+    cv2.destroyAllWindows()
+    if len(points) >= 2:
+        dx = points[0][0] - points[1][0]
+        dy = points[0][1] - points[1][1]
+        pix = (dx*dx + dy*dy)**0.5
+        mm_per_px = real_mm / pix
+        print("Result: diameter_px=", pix, "mm_per_px=", mm_per_px)
+    else:
+        print("Not enough points clicked.")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--image", required=True)
+    parser.add_argument("--real_mm", required=True, type=float)
+    args = parser.parse_args()
+    main(args.image, args.real_mm)
+
+
+    # python/tools/servo_calibrate.py
+"""
+Interactive servo calibrator using SerialComm.
+Prompts user to send commands like ARM,HOME or SORT,SMALL and observe physical movement.
+Usage:
+    python python/tools/servo_calibrate.py --port /dev/ttyUSB0
+This tool will ask for a command and send it; it waits for responses and prints them.
+Always ensure the mechanism has clearance before moving.
+"""
+
+import argparse
+import time
+from communication import SerialComm
+
+def main(port, baud=115200):
+    sc = SerialComm(port, baud, timeout=0.2)
+    print("Connected to", port)
+    print("Type commands to send to ESP32 (e.g., 'ARM,HOME', 'SORT,SMALL', 'TRANSFORM,FOLD'). Type 'q' to quit.")
+    try:
+        while True:
+            cmd = input("send> ").strip()
+            if cmd.lower() in ("q", "quit", "exit"):
+                break
+            if not cmd:
+                continue
+            print("Sending:", cmd)
+            immediate = sc.send_command(cmd)
+            if immediate:
+                print("<<", immediate)
+            try:
+                resp = sc.wait_for(["DONE", "ERROR", "STATUS"], timeout=10.0)
+                print("<<", resp)
+            except TimeoutError:
+                print("No response within timeout.")
+    finally:
+        sc.close()
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", required=True)
+    parser.add_argument("--baud", default=115200)
+    args = parser.parse_args()
+    main(args.port, args.baud)
+
+    name: Python Tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      - name: Install dependencies
+        run: pip install -r python/requirements.txt
+      - name: Run tests
+        run: pytest -q

@@ -1,0 +1,43 @@
+// configuration.h
+// Hardware-specific configuration. MUST be reviewed and set for your robot.
+
+#ifndef CONFIGURATION_H
+#define CONFIGURATION_H
+
+// --- SERIAL ---
+#define SERIAL_BAUD 115200
+
+// --- SORTER SERVO PIN ---
+// TODO: change to the GPIO pin connected to your sorter servo signal line
+#define SORTER_SERVO_PIN 18
+
+// --- SORTER SERVO ANGLES (degrees) ---
+// Tune these angles so that each target bin is hit reliably
+// DO NOT set angles that put your mechanism or servo into mechanical stress.
+#define SORTER_ANGLE_STOW 90         // neutral/stowed angle
+#define SORTER_ANGLE_SMALL 30        // angle to drop into SMALL bin
+#define SORTER_ANGLE_MEDIUM 90       // angle to drop into MEDIUM bin
+#define SORTER_ANGLE_LARGE 150       // angle to drop into LARGE bin
+
+// Servo movement parameters
+#define SORTER_MOVE_STEP_DEG 2        // degrees per step when moving (smaller = smoother)
+#define SORTER_STEP_DELAY_MS 20       // ms delay between steps
+#define SORTER_MOVE_TIMEOUT_MS 5000   // maximum time to complete a move (ms)
+
+// --- SAFETY / SENSORS ---
+// Pins for required safety inputs. If unused, set to -1 and the check will be bypassed.
+// These should be wired to normally-open limit switches or signals that are HIGH when safe.
+// NOTE: Using floating inputs is dangerous; if not present, set pin to -1.
+#define PIN_ARM_HOME_SWITCH 34        // example input pin: HIGH when arm is at home (TODO change)
+#define PIN_GRIPPER_CLOSED_SWITCH 35  // HIGH when gripper is closed (TODO change)
+#define PIN_WHEELS_STOPPED_SIGNAL -1  // e.g., a controller status pin; -1 = not used
+
+// --- EMERGENCY STOP PIN (optional hardware-level) ---
+// If you have a hardware E-STOP input, wire it to this pin and set HIGH/LOW behavior accordingly.
+// If unused, set to -1.
+#define PIN_EMERGENCY_STOP -1
+
+// --- LOGGING ---
+#define ENABLE_DEBUG_PRINTS 1
+
+#endif // CONFIGURATION_H

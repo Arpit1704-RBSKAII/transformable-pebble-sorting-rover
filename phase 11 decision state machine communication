@@ -1,0 +1,80 @@
+"""
+Communication abstraction module.
+
+Provides:
+- BaseComm: abstract interface with send_command(cmd_str) -> immediate response token (OK/BUSY/ERROR) and
+            wait_for(tokens, timeout) -> returns token or raises TimeoutError
+- MockComm: a simple mock used for unit tests that simulates ESP32 responses.
+
+When integrating with real hardware later, implement SerialComm subclass that uses pyserial.
+"""
+
+import time
+from typing import List, Optional
+
+class CommError(Exception):
+    pass
+
+class BaseComm:
+    def send_command(self, cmd: str) -> str:
+        """
+        Send a command string (CSV tokens) to the ESP32.
+        Must return immediate response string (e.g., 'OK', 'BUSY', 'ERROR,...', 'READY').
+        """
+        raise NotImplementedError()
+
+    def wait_for(self, tokens: List[str], timeout: float) -> str:
+        """
+        Block until one of tokens is received or timeout.
+        Return the token string received.
+        """
+        raise NotImplementedError()
+
+    def close(self):
+        pass
+
+# Simple MockComm used for testing
+class MockComm(BaseComm):
+    def __init__(self, behavior_delay=0.05, auto_done=True):
+        """
+        behavior_delay: simulated time for operations
+        auto_done: if True, MockComm will respond with 'BUSY' then 'DONE' on wait_for
+        """
+        self.behavior_delay = behavior_delay
+        self.auto_done = auto_done
+        self.sent_commands = []
+        self._last_cmd = None
+
+    def send_command(self, cmd: str) -> str:
+        print(f"[MockComm] send: {cmd}")
+        self.sent_commands.append(cmd)
+        self._last_cmd = cmd
+        # Simulate immediate ACK
+        if cmd.startswith("STATUS"):
+            return "READY"
+        if self.auto_done:
+            return "BUSY"
+        return "OK"
+
+    def wait_for(self, tokens: List[str], timeout: float) -> str:
+        """
+        Simulate waiting: if tokens contains 'DONE' and we auto_done -> return 'DONE'
+        else return the first matching synthetic token.
+        """
+        elapsed = 0.0
+        step = 0.02
+        while elapsed < timeout:
+            time.sleep(step)
+            elapsed += step
+            # If we auto_done and caller expects DONE, return it after behavior_delay
+            if self.auto_done and "DONE" in tokens:
+                if elapsed >= self.behavior_delay:
+                    print("[MockComm] -> DONE")
+                    return "DONE"
+            # If caller expects OK and auto_done False
+            if not self.auto_done and "OK" in tokens:
+                return "OK"
+        raise TimeoutError("MockComm wait_for timed out")
+
+    def close(self):
+        pass

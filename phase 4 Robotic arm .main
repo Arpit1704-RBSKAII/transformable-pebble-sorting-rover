@@ -1,0 +1,227 @@
+ /*
+ * main.cpp â€” PHASE 4 TEST VERSION
+ * --------------------------------
+ * Standalone test of motor control (Phase 1), generic servo control
+ * (Phase 2), semantic gripper control (Phase 3), AND semantic arm
+ * control (Phase 4). Still no serial command parsing/sorter/
+ * transformation LOGIC - those arrive in later phases.
+ *
+ * What this does:
+ *   1. Runs the Phase 1 motor test sequence (forward/backward/turns).
+ *   2. Runs the Phase 2 servo sweep test (all 5 servos).
+ *   3. Runs the Phase 3 gripper test (open/close/open).
+ *   4. Runs a Phase 4 arm test: home -> pickup -> home -> bin(small) ->
+ *      home -> bin(medium) -> home -> bin(large) -> home, printing
+ *      position state transitions as they happen.
+ *
+ * SAFETY: Keep the arm/gripper/transform mechanism CLEAR of obstacles
+ * and your hands during servo/gripper/arm motion. Wheels should still
+ * be off the ground for the motor portion.
+ */
+
+#include <Arduino.h>
+#include "configuration.h"
+#include "motors.h"
+#include "servos.h"
+#include "gripper.h"
+#include "arm.h"
+
+// Conservative test speed - well under MAX_MOTOR_SPEED_PERCENT
+static const int TEST_SPEED_PERCENT = 30;
+static const int TEST_MOVE_DURATION_MS = 1500;
+static const int TEST_PAUSE_DURATION_MS = 1000;
+
+void setup() {
+  Serial.begin(SERIAL_BAUD_RATE);
+  delay(500); // allow serial monitor to connect
+  Serial.println("=== Phase 1: ESP32 Motor Control Test ===");
+  Serial.println("Wheels should be OFF THE GROUND for this first run.");
+
+  motorsInit();
+  servosInit();
+  gripperInit();
+  armInit();
+
+  delay(2000); // pause before starting, so you can get hands off the robot
+}
+
+// Sweeps a single servo from its safe min to safe max and back once,
+// calling servosUpdate() often so the ramped motion actually progresses.
+static void runServoSweepTest(const char* label, int servoIndex) {
+  Serial.print("[test] Sweeping servo: ");
+  Serial.println(label);
+
+  setServoAngle(servoIndex, SERVO_MAX_ANGLE_DEFAULT);
+  while (!isServoAtTarget(servoIndex)) {
+    servosUpdate();
+    delay(5);
+  }
+  delay(400);
+
+  setServoAngle(servoIndex, SERVO_MIN_ANGLE_DEFAULT);
+  while (!isServoAtTarget(servoIndex)) {
+    servosUpdate();
+    delay(5);
+  }
+  delay(400);
+
+  // Return to safe midpoint before moving on to the next servo
+  int midpoint = (SERVO_MIN_ANGLE_DEFAULT + SERVO_MAX_ANGLE_DEFAULT) / 2;
+  setServoAngle(servoIndex, midpoint);
+  while (!isServoAtTarget(servoIndex)) {
+    servosUpdate();
+    delay(5);
+  }
+
+  Serial.println("[test] done");
+  delay(TEST_PAUSE_DURATION_MS);
+}
+
+// Runs one direction for a fixed duration, calling motorsUpdate() often
+// so speed ramping actually progresses during the move.
+static void runTestStep(const char* label, void (*action)(int), int speedPercent, int durationMs) {
+  Serial.print("[test] ");
+  Serial.println(label);
+
+  action(speedPercent);
+
+  unsigned long start = millis();
+  while (millis() - start < (unsigned long)durationMs) {
+    motorsUpdate();
+    delay(5);
+  }
+
+  stopRobot();
+  Serial.println("[test] stopped");
+  delay(TEST_PAUSE_DURATION_MS);
+}
+
+// Waits (with a timeout) for the gripper to reach a settled state,
+// printing whatever state it lands in. Calls gripperUpdate()/servosUpdate()
+// often so the state machine and servo ramp both actually progress.
+static void waitForGripperSettled(unsigned long timeoutMs) {
+  unsigned long start = millis();
+  while (!isGripperSettled() && (millis() - start < timeoutMs)) {
+    servosUpdate();
+    gripperUpdate();
+    delay(5);
+  }
+}
+
+static void runGripperTest() {
+  Serial.println("[test] Gripper: opening");
+  openGripper();
+  waitForGripperSettled(GRIPPER_MOVE_TIMEOUT_MS);
+  Serial.println("[test] Gripper: closing");
+  closeGripper();
+  waitForGripperSettled(GRIPPER_MOVE_TIMEOUT_MS);
+  Serial.println("[test] Gripper: opening again");
+  openGripper();
+  waitForGripperSettled(GRIPPER_MOVE_TIMEOUT_MS);
+  Serial.println("[test] Gripper test done.");
+  delay(TEST_PAUSE_DURATION_MS);
+}
+
+// Waits (with a timeout) for the arm to reach a settled state,
+// calling armUpdate()/servosUpdate() often so both actually progress.
+static void waitForArmSettled(unsigned long timeoutMs) {
+  unsigned long start = millis();
+  while (!isArmSettled() && (millis() - start < timeoutMs)) {
+    servosUpdate();
+    armUpdate();
+    delay(5);
+  }
+}
+
+static void runArmTest() {
+  Serial.println("[test] Arm: home");
+  moveArmHome();
+  waitForArmSettled(ARM_MOVE_TIMEOUT_MS);
+  delay(400);
+
+  Serial.println("[test] Arm: pickup");
+  moveArmToPickup();
+  waitForArmSettled(ARM_MOVE_TIMEOUT_MS);
+  delay(400);
+
+  Serial.println("[test] Arm: home");
+  moveArmHome();
+  waitForArmSettled(ARM_MOVE_TIMEOUT_MS);
+  delay(400);
+
+  Serial.println("[test] Arm: bin SMALL");
+  moveArmToBin(PEBBLE_SIZE_SMALL);
+  waitForArmSettled(ARM_MOVE_TIMEOUT_MS);
+  delay(400);
+
+  Serial.println("[test] Arm: home");
+  moveArmHome();
+  waitForArmSettled(ARM_MOVE_TIMEOUT_MS);
+  delay(400);
+
+  Serial.println("[test] Arm: bin MEDIUM");
+  moveArmToBin(PEBBLE_SIZE_MEDIUM);
+  waitForArmSettled(ARM_MOVE_TIMEOUT_MS);
+  delay(400);
+
+  Serial.println("[test] Arm: home");
+  moveArmHome();
+  waitForArmSettled(ARM_MOVE_TIMEOUT_MS);
+  delay(400);
+
+  Serial.println("[test] Arm: bin LARGE");
+  moveArmToBin(PEBBLE_SIZE_LARGE);
+  waitForArmSettled(ARM_MOVE_TIMEOUT_MS);
+  delay(400);
+
+  Serial.println("[test] Arm: home");
+  moveArmHome();
+  waitForArmSettled(ARM_MOVE_TIMEOUT_MS);
+
+  Serial.println("[test] Arm test done.");
+  delay(TEST_PAUSE_DURATION_MS);
+}
+
+void loop() {
+  static bool testRun = false;
+
+  if (!testRun) {
+    runTestStep("Forward", moveForward, TEST_SPEED_PERCENT, TEST_MOVE_DURATION_MS);
+    runTestStep("Backward", moveBackward, TEST_SPEED_PERCENT, TEST_MOVE_DURATION_MS);
+    runTestStep("Turn Left", turnLeft, TEST_SPEED_PERCENT, TEST_MOVE_DURATION_MS);
+    runTestStep("Turn Right", turnRight, TEST_SPEED_PERCENT, TEST_MOVE_DURATION_MS);
+
+    Serial.println("=== Phase 1 motor test complete ===");
+    Serial.println("If all four directions matched their labels correctly, Phase 1 is verified.");
+
+    Serial.println("=== Starting Phase 2 servo sweep test ===");
+    runServoSweepTest("Arm Base", SERVO_IDX_ARM_BASE);
+    runServoSweepTest("Arm Shoulder", SERVO_IDX_ARM_SHOULDER);
+    runServoSweepTest("Arm Elbow", SERVO_IDX_ARM_ELBOW);
+    runServoSweepTest("Gripper", SERVO_IDX_GRIPPER);
+    runServoSweepTest("Transformation", SERVO_IDX_TRANSFORM);
+    Serial.println("=== Phase 2 servo sweep complete ===");
+    Serial.println("If each servo moved smoothly through its labeled joint, Phase 2 is verified.");
+
+    Serial.println("=== Starting Phase 3 gripper test ===");
+    runGripperTest();
+    Serial.println("=== Phase 3 gripper test complete ===");
+    Serial.println("If the gripper opened/closed/opened and state messages matched, Phase 3 is verified.");
+
+    Serial.println("=== Starting Phase 4 arm test ===");
+    runArmTest();
+    Serial.println("=== Phase 4 arm test complete ===");
+    Serial.println("If the arm visited home/pickup/each bin and returned home correctly, Phase 4 is verified.");
+
+    testRun = true;
+  }
+
+  // Keep servos, gripper, and arm state gently maintaining position while idle.
+  servosUpdate();
+  gripperUpdate();
+  armUpdate();
+
+  // Idle after test - nothing else happens until Phase 5 adds serial commands.
+  delay(10);
+}
+

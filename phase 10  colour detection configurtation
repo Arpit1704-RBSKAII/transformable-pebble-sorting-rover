@@ -1,0 +1,26 @@
+# Additions/updates for colour classification.
+# Existing configuration content (CALIBRATION, SIZE_THRESHOLDS_MM, etc.) should remain.
+
+# Example color references (BGR tuples). These are initial guesses.
+# Calibrate these by sampling real pebbles with your camera and saving their mean BGR.
+# The classifier converts BGR references to Lab internally for comparison.
+COLOR_REFERENCES_BGR = {
+    "BROWN": (42, 42, 165),    # BGR approximate brown
+    "GREY": (128, 128, 128),
+    "BLACK": (20, 20, 20),
+    "WHITE": (230, 230, 230),
+    "RED": (45, 30, 200),
+    "YELLOW": (40, 220, 220),
+    "GREEN": (60, 150, 60),
+    "BLUE": (200, 60, 40)
+}
+
+# Maximum meaningful Lab distance — used to normalize confidence.
+# If average distance > COLOR_MAX_DISTANCE, confidence will be very low.
+COLOR_MAX_DISTANCE = 60.0
+
+# Minimum mask pixel count to attempt color classification
+MIN_COLOR_MASK_PIXELS = 20
+
+# Confidence floor when insufficient data
+COLOR_CONFIDENCE_FLOOR = 0.0

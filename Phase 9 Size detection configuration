@@ -1,0 +1,44 @@
+"""
+Project configuration and calibration placeholders.
+
+TODO: After hardware / camera calibration, update CAMERA_CALIBRATION
+and SIZE_THRESHOLDS_MM with real values.
+"""
+
+# Calibration mapping mode:
+# - 'pixel_to_mm': linear scale for diameter (mm per pixel)
+# - 'area_pixel_to_mm2': area-based mapping (mm^2 per pixel)
+# Choose mapping depending on calibration method you perform.
+CALIBRATION = {
+    "mode": "pixel_to_mm",  # or "area_pixel_to_mm2"
+    # Example placeholder: 0.5 mm per pixel (this is arbitrary)
+    # TODO: Measure with calibration target and replace.
+    "pixel_to_mm": 0.5,
+    # Alternatively, for area mapping (if you calibrate area directly):
+    "area_pixel_to_mm2": 0.25,
+    # Confidence floor added if calibration is absent
+    "is_calibrated": False,
+}
+
+# Default size thresholds (in millimetres). These are conservative placeholders.
+# Adjust after measuring real pebbles and calibration.
+# Format: (min_inclusive_mm, max_exclusive_mm)
+SIZE_THRESHOLDS_MM = {
+    "SMALL": (0.0, 10.0),    # 0 - 10 mm
+    "MEDIUM": (10.0, 25.0),  # 10 - 25 mm
+    "LARGE": (25.0, 999.0),  # 25+ mm
+}
+
+# If calibration missing, fallback pixel area thresholds (fallback only):
+# These are very approximate and used when CALIBRATION["is_calibrated"] is False.
+FALLBACK_PIXEL_AREA_THRESHOLDS = {
+    "SMALL": (0, 500),      # pixel area ranges — very approximate
+    "MEDIUM": (500, 2500),
+    "LARGE": (2500, 9999999),
+}
+
+# Minimum contour area in pixels to consider valid detection
+MIN_CONTOUR_AREA_PIXELS = 50
+
+# Confidence boost factor for round/solid contours
+ROUNDNESS_BONUS = 0.1

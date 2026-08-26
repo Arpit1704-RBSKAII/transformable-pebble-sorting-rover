@@ -1,0 +1,181 @@
+// esp32/main.cpp
+#include <Arduino.h>
+#include "configuration.h"
+#include "motors.h"
+#include "arm.h"
+#include "gripper.h"
+#include "sorter.h"
+#include "transformation.h"
+
+Motors motors;
+Arm arm;
+Gripper gripper;
+Sorter sorter;
+Transformation transformer;
+
+String readLineFromSerial() {
+    String line = "";
+    while (Serial.available() > 0) {
+        char c = (char)Serial.read();
+        if (c == '\n' || c == '\r') {
+            if (line.length() > 0) break;
+            else continue;
+        }
+        line += c;
+    }
+    return line;
+}
+
+void setup() {
+    Serial.begin(SERIAL_BAUD);
+    delay(100);
+#if ENABLE_DEBUG_PRINTS
+    Serial.println("[MAIN] Starting integrated firmware");
+#endif
+    motors.begin();
+    arm.begin();
+    gripper.begin();
+    sorter.begin();
+    transformer.begin();
+    Serial.println("READY");
+}
+
+void sendError(const String &msg) {
+    Serial.println("ERROR," + msg);
+}
+
+void processCommand(const String &line) {
+    String s = line;
+    s.trim();
+    if (s.length() == 0) return;
+#if ENABLE_DEBUG_PRINTS
+    Serial.printf("[MAIN] CMD: %s\n", s.c_str());
+#endif
+    int comma = s.indexOf(',');
+    String cmd = (comma >= 0) ? s.substring(0, comma) : s;
+    String rest = (comma >= 0) ? s.substring(comma + 1) : "";
+    cmd.trim(); rest.trim();
+
+    if (cmd.equalsIgnoreCase("MOVE")) {
+        // MOVE,FORWARD,100  OR MOVE,APPROACH,x,y (from DecisionMachine)
+        // We handle a few subcommands
+        if (rest.startsWith("FORWARD")) {
+            // parse optional speed
+            int cpos = rest.indexOf(',');
+            int speed = 80;
+            if (cpos >= 0) speed = rest.substring(cpos + 1).toInt();
+            Serial.println("BUSY");
+            motors.moveForward(speed);
+            delay(500); // simplistic: perform short move then stop
+            motors.stop();
+            Serial.println("DONE");
+        } else if (rest.startsWith("BACKWARD")) {
+            int cpos = rest.indexOf(',');
+            int speed = 80;
+            if (cpos >= 0) speed = rest.substring(cpos + 1).toInt();
+            Serial.println("BUSY");
+            motors.moveBackward(speed);
+            delay(500);
+            motors.stop();
+            Serial.println("DONE");
+        } else if (rest.startsWith("LEFT")) {
+            int cpos = rest.indexOf(',');
+            int s = (cpos >= 0) ? rest.substring(cpos + 1).toInt() : 80;
+            Serial.println("BUSY");
+            motors.turnLeft(s);
+            delay(400);
+            motors.stop();
+            Serial.println("DONE");
+        } else if (rest.startsWith("RIGHT")) {
+            int cpos = rest.indexOf(',');
+            int s = (cpos >= 0) ? rest.substring(cpos + 1).toInt() : 80;
+            Serial.println("BUSY");
+            motors.turnRight(s);
+            delay(400);
+            motors.stop();
+            Serial.println("DONE");
+        } else if (rest.startsWith("APPROACH")) {
+            // Approach is higher-level; DecisionMachine uses it currently as a placeholder
+            // Implement safe approach: short forward move for now
+            Serial.println("BUSY");
+            motors.moveForward(100);
+            delay(600);
+            motors.stop();
+            Serial.println("DONE");
+        } else {
+            sendError("UNKNOWN_MOVE");
+        }
+    } else if (cmd.equalsIgnoreCase("ARM")) {
+        if (rest.equalsIgnoreCase("HOME")) {
+            Serial.println("BUSY");
+            bool ok = arm.moveHome();
+            if (ok) Serial.println("DONE"); else sendError("ARM_FAILED");
+        } else if (rest.equalsIgnoreCase("TO_PICKUP") || rest.equalsIgnoreCase("PICK")) {
+            Serial.println("BUSY");
+            bool ok = arm.moveToPickup();
+            if (ok) Serial.println("DONE"); else sendError("ARM_FAILED");
+        } else if (rest.equalsIgnoreCase("PLACE")) {
+            Serial.println("BUSY");
+            // Place can be modeled as moving to bin positions
+            // Expect size arg possibly in rest after comma (e.g., ARM,PLACE,SMALL) — but DecisionMachine uses SORT for bin motion.
+            bool ok = arm.moveHome();
+            if (ok) Serial.println("DONE"); else sendError("ARM_FAILED");
+        } else {
+            sendError("UNKNOWN_ARM");
+        }
+    } else if (cmd.equalsIgnoreCase("GRIP")) {
+        if (rest.equalsIgnoreCase("OPEN")) {
+            Serial.println("BUSY");
+            bool ok = gripper.open();
+            if (ok) Serial.println("DONE"); else sendError("GRIP_FAILED");
+        } else if (rest.equalsIgnoreCase("CLOSE")) {
+            Serial.println("BUSY");
+            bool ok = gripper.close();
+            if (ok) Serial.println("DONE"); else sendError("GRIP_FAILED");
+        } else sendError("UNKNOWN_GRIP");
+    } else if (cmd.equalsIgnoreCase("SORT")) {
+        // SORT,SMALL / MEDIUM / LARGE
+        if (rest.length() == 0) { sendError("NO_SIZE"); return; }
+        Serial.println("BUSY");
+        bool ok = sorter.sortToBin(rest);
+        if (ok) Serial.println("DONE"); else sendError("SORT_FAILED");
+    } else if (cmd.equalsIgnoreCase("TRANSFORM")) {
+        if (rest.equalsIgnoreCase("FOLD")) {
+            Serial.println("BUSY");
+            bool ok = transformer.fold();
+            if (ok) Serial.println("DONE"); else sendError("TRANSFORM_FAILED");
+        } else if (rest.equalsIgnoreCase("UNFOLD")) {
+            Serial.println("BUSY");
+            bool ok = transformer.unfold();
+            if (ok) Serial.println("DONE"); else sendError("TRANSFORM_FAILED");
+        } else sendError("UNKNOWN_TRANSFORM");
+    } else if (cmd.equalsIgnoreCase("STATUS")) {
+        // Combined status report
+        String sstatus = "STATUS";
+        if (motors.isMoving()) sstatus += ",MOTORS_BUSY";
+        if (arm.isExtended()) sstatus += ",ARM_EXTENDED";
+        if (sorter.isBusy()) sstatus += ",SORTER_BUSY";
+        if (transformer.isBusy()) sstatus += ",TRANSFORM_BUSY";
+        Serial.println(sstatus);
+    } else if (cmd.equalsIgnoreCase("EMERGENCY")) {
+        if (rest.equalsIgnoreCase("STOP")) {
+            // Immediately stop all subsystems
+            motors.emergencyStop();
+            arm.emergencyStop();
+            gripper.emergencyStop();
+            sorter.emergencyStop();
+            transformer.emergencyStop();
+            Serial.println("DONE");
+        } else sendError("UNKNOWN_EMERGENCY_CMD");
+    } else {
+        sendError("UNKNOWN_COMMAND");
+    }
+}
+
+void loop() {
+    if (Serial.available() > 0) {
+        String line = readLineFromSerial();
+        if (line.length() > 0) processCommand(line);
+    }
+    // other periodic tasks could be added here
+}

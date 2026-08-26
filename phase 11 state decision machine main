@@ -1,0 +1,315 @@
+"""
+High-level decision and state machine.
+
+Usage:
+- Create DecisionMachine(comm) where comm is an instance of BaseComm (e.g., MockComm for tests or SerialComm for hardware).
+- Call dm.start_search() to transition to SEARCHING.
+- Feed detections by calling dm.process_detection(detection, image), or call dm.tick() inside a loop (tick processes queued events or timeouts).
+- You can call dm.emergency_stop() to enter EMERGENCY_STOP state.
+
+Design:
+- The machine is intentionally single-threaded for clarity. Integrate into your main loop or UI thread.
+- Communication with hardware is done through comm.send_command() and comm.wait_for().
+"""
+
+import time
+from typing import Dict, Optional
+from communication import BaseComm, MockComm
+from classification import classify_size
+from color_classification import classify_colour
+import configuration as cfg
+
+class DecisionError(Exception):
+    pass
+
+class EmergencyException(Exception):
+    pass
+
+class DecisionMachine:
+    # States
+    STATE_IDLE = "IDLE"
+    STATE_SEARCHING = "SEARCHING"
+    STATE_PEBBLE_DETECTED = "PEBBLE_DETECTED"
+    STATE_POSITION_ESTIMATED = "POSITION_ESTIMATED"
+    STATE_MOVING_ARM = "MOVING_ARM"
+    STATE_GRIPPING = "GRIPPING"
+    STATE_PICKED = "PICKED"
+    STATE_CLASSIFYING = "CLASSIFYING"
+    STATE_MOVING_TO_BIN = "MOVING_TO_BIN"
+    STATE_RELEASING = "RELEASING"
+    STATE_RETURNING_HOME = "RETURNING_HOME"
+    STATE_READY = "READY"
+    STATE_FOLDING = "FOLDING"
+    STATE_ROVER_MODE = "ROVER_MODE"
+    STATE_UNFOLDING = "UNFOLDING"
+    STATE_ERROR = "ERROR"
+    STATE_EMERGENCY = "EMERGENCY_STOP"
+
+    def __init__(self, comm: Optional[BaseComm] = None):
+        self.state = self.STATE_IDLE
+        self.comm = comm if comm is not None else MockComm()
+        self.emergency = False
+        self.arm_extended = False
+        self.transform_folded = False
+        self.last_detection = None
+        self.pick_retries = 0
+        self.log_level = getattr(cfg, "LOG_VERBOSITY", 1)
+
+    def log(self, *args, level=1):
+        if self.log_level >= level:
+            print("[DM]", *args)
+
+    def start_search(self):
+        if self.emergency:
+            self.log("Cannot start search: EMERGENCY active", level=0)
+            return
+        if self.state not in (self.STATE_IDLE, self.STATE_READY):
+            self.log("start_search called but not in IDLE/READY", level=1)
+        self.state = self.STATE_SEARCHING
+        self.log("State -> SEARCHING")
+
+    def emergency_stop(self):
+        self.log("Emergency stop requested", level=0)
+        self.emergency = True
+        self.state = self.STATE_EMERGENCY
+        # Immediately command hardware to stop
+        try:
+            self.comm.send_command("EMERGENCY,STOP")
+        except Exception as e:
+            self.log("Failed to send EMERGENCY to hardware:", e, level=0)
+
+    def clear_emergency(self):
+        self.log("Clearing emergency", level=0)
+        self.emergency = False
+        self.state = self.STATE_IDLE
+
+    def _send_and_wait(self, cmd: str, expected_tokens=("DONE", "OK"), timeout: float = cfg.COMM_COMMAND_TIMEOUT):
+        """
+        Send a command and wait for a DONE or OK token.
+        Returns the token received.
+        Raises DecisionError on ERROR or TimeoutError on timeout.
+        """
+        if self.emergency:
+            raise EmergencyException("Cannot send commands while in EMERGENCY state")
+        self.log("Sending command:", cmd)
+        resp = self.comm.send_command(cmd)
+        self.log("Immediate response:", resp, level=2)
+        if resp.startswith("ERROR"):
+            raise DecisionError(f"Hardware error on command {cmd}: {resp}")
+        # If immediate resp indicates success (OK) and OK is acceptable, return
+        if resp in expected_tokens and resp != "BUSY":
+            return resp
+        # Otherwise wait for DONE or matching token
+        try:
+            token = self.comm.wait_for(list(expected_tokens), timeout=timeout)
+            if token.startswith("ERROR"):
+                raise DecisionError(f"Hardware error wait_for {token}")
+            return token
+        except TimeoutError as e:
+            raise DecisionError(f"Timeout waiting for hardware for command {cmd}") from e
+
+    def process_detection(self, detection: Dict, image=None):
+        """
+        Main entrypoint: called when detection pipeline finds an object.
+        detection should be dict containing at least 'detected', 'bbox' and area/contour optional.
+        """
+        if self.emergency:
+            self.log("Ignoring detection due to EMERGENCY", level=0)
+            return
+
+        self.last_detection = detection
+
+        # Only act if in SEARCHING or READY (automatically searching)
+        if self.state not in (self.STATE_SEARCHING, self.STATE_IDLE, self.STATE_READY):
+            self.log("Received detection but state is", self.state, "— ignoring", level=2)
+            return
+
+        self.state = self.STATE_PEBBLE_DETECTED
+        self.log("State -> PEBBLE_DETECTED")
+
+        # Estimate position: use bbox center for now
+        bbox = detection.get("bbox")
+        if not bbox:
+            self.log("No bbox in detection, cannot estimate position", level=0)
+            self.state = self.STATE_ERROR
+            return
+
+        x, y, w, h = bbox
+        cx, cy = int(x + w/2), int(y + h/2)
+        detection["center"] = (cx, cy)
+        self.state = self.STATE_POSITION_ESTIMATED
+        self.log(f"State -> POSITION_ESTIMATED at center {cx},{cy}")
+
+        # Decide whether to approach/pick:
+        # First perform size and colour classification
+        size_result = classify_size(detection)
+        color_result = classify_colour(detection, image=image)
+
+        self.log("Size result:", size_result, level=2)
+        self.log("Colour result:", color_result, level=2)
+
+        # Combine confidences
+        size_conf = size_result.get("confidence", 0.0) or 0.0
+        color_conf = color_result.get("confidence", 0.0) or 0.0
+        combined_conf = (cfg.SIZE_CONFIDENCE_WEIGHT * size_conf) + (cfg.COLOR_CONFIDENCE_WEIGHT * color_conf)
+
+        # Save classification summary in detection for later stages
+        detection["size_result"] = size_result
+        detection["color_result"] = color_result
+        detection["combined_confidence"] = combined_conf
+
+        self.log(f"Combined confidence: {combined_conf:.3f}")
+
+        if combined_conf < cfg.PICK_CONFIDENCE_THRESHOLD:
+            self.log("Combined confidence too low — skipping object", level=1)
+            # Optionally could request re-scan; here we return to SEARCHING
+            self.state = self.STATE_SEARCHING
+            return
+
+        # Approach: issue drive commands to center on pebble (simplified)
+        # For now command a coarse MOVE towards the object. The real system should use transforms from camera to robot coords.
+        if not cfg.ALLOW_PICK_WHILE_MOVING and self.arm_extended:
+            self.log("Arm is extended; refusing to drive", level=0)
+            self.state = self.STATE_ERROR
+            return
+
+        # Example approach command: MOVE,TOWARD,x,y  — we keep native command set minimal
+        try:
+            self.log("Approaching pebble...", level=1)
+            # TODO: replace with proper transform mapping from image coords to wheel motion
+            cmd = f"MOVE,APPROACH,{cx},{cy}"
+            token = self._send_and_wait(cmd, expected_tokens=("DONE", "OK", "BUSY"), timeout=cfg.MOVEMENT_TIMEOUT)
+            self.log("Approach response:", token)
+        except DecisionError as e:
+            self.log("Failed to approach pebble:", e, level=0)
+            self.state = self.STATE_ERROR
+            return
+        except EmergencyException:
+            self.log("Emergency detected during approach", level=0)
+            self.state = self.STATE_EMERGENCY
+            return
+
+        # Now move arm to pickup
+        try:
+            self.state = self.STATE_MOVING_ARM
+            self.log("State -> MOVING_ARM")
+            self._send_and_wait("ARM,TO_PICKUP", timeout=cfg.ARM_MOVE_TIMEOUT)
+            self.arm_extended = True
+        except DecisionError as e:
+            self.log("Arm move failed:", e, level=0)
+            self.state = self.STATE_ERROR
+            return
+
+        # Grip sequence
+        try:
+            self.state = self.STATE_GRIPPING
+            self.log("State -> GRIPPING")
+            # Open gripper first to ensure clearance
+            self._send_and_wait("GRIP,OPEN", timeout=3.0)
+            # Close to pick
+            self._send_and_wait("GRIP,CLOSE", timeout=cfg.PICK_TIMEOUT)
+            self.state = self.STATE_PICKED
+            self.log("State -> PICKED")
+        except DecisionError as e:
+            self.log("Gripping failed:", e, level=0)
+            self.pick_retries += 1
+            if self.pick_retries <= cfg.MAX_PICK_RETRIES:
+                self.log("Retrying pick", level=1)
+                self.state = self.STATE_SEARCHING
+                return
+            else:
+                self.state = self.STATE_ERROR
+                return
+
+        # Classify (size already known, we trust size_result)
+        self.state = self.STATE_CLASSIFYING
+        self.log("State -> CLASSIFYING")
+        size_label = size_result.get("size_label", "UNKNOWN")
+        # optionally re-evaluate color/size now that object is held, but we skip for now
+
+        # Move to bin
+        try:
+            self.state = self.STATE_MOVING_TO_BIN
+            self.log("Moving to bin for size:", size_label)
+            self._send_and_wait(f"SORT,{size_label}", timeout=cfg.MOVEMENT_TIMEOUT)
+        except DecisionError as e:
+            self.log("Moving to bin failed:", e, level=0)
+            self.state = self.STATE_ERROR
+            return
+
+        # Release
+        try:
+            self.state = self.STATE_RELEASING
+            self.log("State -> RELEASING")
+            self._send_and_wait("GRIP,OPEN", timeout=3.0)
+            # Close gripper to safe state
+            self._send_and_wait("GRIP,CLOSE", timeout=3.0)
+            # Move arm home
+            self._send_and_wait("ARM,HOME", timeout=cfg.ARM_MOVE_TIMEOUT)
+            self.arm_extended = False
+            self.state = self.STATE_RETURNING_HOME
+            self.log("State -> RETURNING_HOME")
+            # Optionally move rover back a bit
+            self._send_and_wait("MOVE,BACKWARD,40", timeout=5.0)
+            self.state = self.STATE_READY
+            self.log("State -> READY")
+            # Reset retries
+            self.pick_retries = 0
+        except DecisionError as e:
+            self.log("Release sequence failed:", e, level=0)
+            self.state = self.STATE_ERROR
+            return
+
+    def fold_transform(self):
+        """
+        Fold the robot transform (to compact rover mode).
+        Enforce arm_home, gripper closed, wheels stopped.
+        """
+        if self.arm_extended:
+            self.log("Cannot fold: arm not home", level=0)
+            raise DecisionError("Arm must be home before folding")
+        try:
+            self.state = self.STATE_FOLDING
+            self.log("State -> FOLDING")
+            self._send_and_wait("TRANSFORM,FOLD", timeout=15.0)
+            self.transform_folded = True
+            self.state = self.STATE_ROVER_MODE
+            self.log("State -> ROVER_MODE")
+        except DecisionError as e:
+            self.state = self.STATE_ERROR
+            raise
+
+    def unfold_transform(self):
+        if self.transform_folded is False:
+            self.log("Already unfolded", level=1)
+            return
+        try:
+            self.state = self.STATE_UNFOLDING
+            self.log("State -> UNFOLDING")
+            self._send_and_wait("TRANSFORM,UNFOLD", timeout=15.0)
+            self.transform_folded = False
+            self.state = self.STATE_READY
+            self.log("State -> READY")
+        except DecisionError as e:
+            self.state = self.STATE_ERROR
+            raise
+
+    def tick(self):
+        """
+        Optional periodic processing. For now, a placeholder to allow future events.
+        """
+        if self.emergency:
+            self.log("Emergency active in tick", level=0)
+            return
+        # Could poll hardware status periodically
+        try:
+            # self.comm.send_command("STATUS")
+            pass
+        except Exception:
+            self.log("STATUS poll failed", level=2)
+
+    def shutdown(self):
+        try:
+            self.comm.close()
+        except Exception:
+            pass

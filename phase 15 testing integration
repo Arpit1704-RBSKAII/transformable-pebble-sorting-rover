@@ -1,0 +1,34 @@
+# python/tools/serial_test.py
+"""
+Manual serial test. Sends a command and prints responses.
+Usage:
+    python python/tools/serial_test.py --port /dev/ttyUSB0 --cmd "STATUS"
+    python python/tools/serial_test.py --port COM3 --cmd "SORT,SMALL"
+"""
+
+import argparse
+import time
+import serial
+
+def main(port, baud, cmd, timeout=5.0):
+    ser = serial.Serial(port, baud, timeout=0.1)
+    time.sleep(0.2)
+    ser.reset_input_buffer()
+    print("Sending:", cmd)
+    ser.write((cmd.strip() + "\n").encode("utf-8"))
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if ser.in_waiting:
+            line = ser.readline().decode('utf-8', errors='ignore').strip()
+            if line:
+                print("<<", line)
+        time.sleep(0.01)
+    ser.close()
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", required=True)
+    parser.add_argument("--baud", default=115200, type=int)
+    parser.add_argument("--cmd", default="STATUS")
+    args = parser.parse_args()
+    main(args.port, args.baud, args.cmd)

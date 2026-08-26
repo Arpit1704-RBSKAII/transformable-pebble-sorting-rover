@@ -1,0 +1,119 @@
+# python/communication.py
+import time
+from typing import List, Optional
+import serial
+
+class CommError(Exception):
+    pass
+
+class BaseComm:
+    def send_command(self, cmd: str) -> str:
+        raise NotImplementedError()
+    def wait_for(self, tokens: List[str], timeout: float) -> str:
+        raise NotImplementedError()
+    def close(self):
+        pass
+
+class MockComm(BaseComm):
+    def __init__(self, behavior_delay=0.05, auto_done=True):
+        self.behavior_delay = behavior_delay
+        self.auto_done = auto_done
+        self.sent_commands = []
+    def send_command(self, cmd: str) -> str:
+        print(f"[MockComm] send: {cmd}")
+        self.sent_commands.append(cmd)
+        if cmd.startswith("STATUS"): return "READY"
+        return "BUSY" if self.auto_done else "OK"
+    def wait_for(self, tokens: List[str], timeout: float) -> str:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(self.behavior_delay)
+            if "DONE" in tokens and self.auto_done:
+                return "DONE"
+            if "OK" in tokens and not self.auto_done:
+                return "OK"
+        raise TimeoutError("MockComm wait timed out")
+    def close(self): pass
+
+class SerialComm(BaseComm):
+    """
+    Serial communication wrapper for the ESP32 protocol.
+    - port: e.g., /dev/ttyUSB0 or COM3
+    - baud: e.g., 115200
+    - eol: newline termination
+    """
+
+    def __init__(self, port: str, baud: int = 115200, timeout: float = 0.1):
+        self.port = port
+        self.baud = baud
+        self.timeout = timeout
+        try:
+            self.ser = serial.Serial(port, baud, timeout=timeout)
+        except Exception as e:
+            raise CommError(f"Failed to open serial port {port}: {e}")
+        # small flush
+        time.sleep(0.1)
+        self._drain_input()
+
+    def _drain_input(self):
+        try:
+            self.ser.reset_input_buffer()
+        except Exception:
+            pass
+
+    def send_command(self, cmd: str) -> str:
+        """
+        Write the command and read an immediate line (if any).
+        Returns immediate response or empty string if none.
+        """
+        if not self.ser or not self.ser.is_open:
+            raise CommError("Serial port not open")
+        line = (cmd.strip() + "\n").encode("utf-8")
+        self.ser.write(line)
+        # read short time for immediate response
+        t0 = time.time()
+        deadline = t0 + self.timeout
+        while time.time() < deadline:
+            l = self._readline_nonblock()
+            if l is not None:
+                return l
+            time.sleep(0.01)
+        return ""  # no immediate response
+
+    def _readline_nonblock(self) -> Optional[str]:
+        if self.ser.in_waiting > 0:
+            try:
+                raw = self.ser.readline()
+                line = raw.decode("utf-8", errors="ignore").strip()
+                if line == "":
+                    return None
+                return line
+            except Exception:
+                return None
+        return None
+
+    def wait_for(self, tokens: List[str], timeout: float) -> str:
+        """
+        Blocking wait until a line beginning with one of the tokens is received.
+        tokens like 'DONE', 'OK', 'ERROR'
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.ser.in_waiting > 0:
+                line = self.ser.readline().decode("utf-8", errors="ignore").strip()
+                if not line:
+                    continue
+                # Return the first token that matches start of line, or full line if ERROR
+                for t in tokens:
+                    if line.startswith(t):
+                        return line
+                # Non-matching messages are ignored or can be logged
+            time.sleep(0.01)
+        raise TimeoutError("SerialComm.wait_for timed out")
+
+    def close(self):
+        try:
+            if self.ser and self.ser.is_open:
+                self.ser.close()
+        except Exception:
+            pass

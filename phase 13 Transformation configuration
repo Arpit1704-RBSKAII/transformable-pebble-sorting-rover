@@ -1,0 +1,28 @@
+// TRANSFORMATION CONFIGURATION — add to configuration.h (merge with existing)
+#define TRANSFORM_SERVO_PIN 19        // TODO: change to the GPIO pin connected to transform servo
+#define TRANSFORM_ANGLE_STOW 90      // neutral/unfolded angle (sorting mode)
+#define TRANSFORM_ANGLE_FOLDED 20    // folded angle (compact rover mode)
+#define TRANSFORM_MOVE_STEP_DEG 3    // degrees per incremental step
+#define TRANSFORM_STEP_DELAY_MS 25   // ms delay between steps
+#define TRANSFORM_MOVE_TIMEOUT_MS 12000 // ms timeout for folding/unfolding
+
+// Optional limit switches confirming folded/unfolded positions
+// Set to -1 if not available
+#define PIN_TRANSFORM_LIMIT_FOLDED -1
+#define PIN_TRANSFORM_LIMIT_UNFOLDED -1
+
+// Safety checks (these may already exist in configuration.h)
+#ifndef PIN_ARM_HOME_SWITCH
+#define PIN_ARM_HOME_SWITCH 34
+#endif
+#ifndef PIN_GRIPPER_CLOSED_SWITCH
+#define PIN_GRIPPER_CLOSED_SWITCH 35
+#endif
+#ifndef PIN_WHEELS_STOPPED_SIGNAL
+#define PIN_WHEELS_STOPPED_SIGNAL -1
+#endif
+
+// Emergency input pin (optional hardware-level)
+#ifndef PIN_EMERGENCY_STOP
+#define PIN_EMERGENCY_STOP -1
+#endif

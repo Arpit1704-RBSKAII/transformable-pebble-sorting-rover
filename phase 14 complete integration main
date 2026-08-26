@@ -1,0 +1,59 @@
+# python/main.py
+import argparse
+import time
+from communication import SerialComm, MockComm
+from decision import DecisionMachine
+
+def make_synthetic_detection():
+    # Synthetic detection - moderate size
+    return {
+        "detected": True,
+        "bbox": (100, 120, 40, 35),
+        "area": 1200,
+        "perimeter": 140.0,
+        "contour_solidity": 0.9
+    }
+
+def run_live(port, baud=115200):
+    comm = SerialComm(port, baud, timeout=0.2)
+    dm = DecisionMachine(comm=comm)
+    dm.start_search()
+    print("Connected. Press Enter to simulate a detection, type 'q' to quit.")
+    try:
+        while True:
+            s = input("> ")
+            if s.strip().lower() in ("q", "quit", "exit"):
+                break
+            if s.strip() == "":
+                det = make_synthetic_detection()
+                print("Feeding synthetic detection to DecisionMachine...")
+                dm.process_detection(det, image=None)
+                print("State after processing:", dm.state)
+            else:
+                print("Unknown command. Press Enter to simulate detection, 'q' to quit.")
+    finally:
+        comm.close()
+
+def run_simulate():
+    comm = MockComm(auto_done=True)
+    dm = DecisionMachine(comm=comm)
+    dm.start_search()
+    print("SIMULATE mode: automatic cycle every 5s. Ctrl-C to stop.")
+    try:
+        while True:
+            det = make_synthetic_detection()
+            dm.process_detection(det, image=None)
+            print("State:", dm.state)
+            time.sleep(5.0)
+    except KeyboardInterrupt:
+        pass
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", help="Serial port (if omitted runs simulation)", default=None)
+    parser.add_argument("--baud", type=int, default=115200)
+    args = parser.parse_args()
+    if args.port:
+        run_live(args.port, args.baud)
+    else:
+        run_simulate()

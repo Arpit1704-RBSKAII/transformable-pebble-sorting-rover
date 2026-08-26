@@ -1,0 +1,41 @@
+// assume you have included transformation.h and created a Transformation instance `transformer`
+// inside setup():
+// transformer.begin();
+// Serial.println("READY");
+
+void processCommand(const String &s) {
+    String line = s;
+    line.trim();
+    if (line.length() == 0) return;
+    int comma = line.indexOf(',');
+    String cmd = (comma >= 0) ? line.substring(0, comma) : line;
+    String arg = (comma >= 0) ? line.substring(comma + 1) : "";
+    cmd.trim(); arg.trim();
+
+    if (cmd.equalsIgnoreCase("TRANSFORM")) {
+        if (arg.equalsIgnoreCase("FOLD")) {
+            Serial.println("BUSY");
+            bool ok = transformer.fold();
+            if (ok) Serial.println("DONE");
+            else Serial.println("ERROR,TRANSFORM_FAILED");
+        } else if (arg.equalsIgnoreCase("UNFOLD")) {
+            Serial.println("BUSY");
+            bool ok = transformer.unfold();
+            if (ok) Serial.println("DONE");
+            else Serial.println("ERROR,TRANSFORM_FAILED");
+        } else {
+            Serial.println("ERROR,UNKNOWN_TRANSFORM_CMD");
+        }
+    } else if (cmd.equalsIgnoreCase("STATUS")) {
+        if (transformer.isBusy()) Serial.println("STATUS,BUSY");
+        else if (transformer.isFolded()) Serial.println("STATUS,FOLDED");
+        else Serial.println("STATUS,UNFOLDED");
+    } else if (cmd.equalsIgnoreCase("EMERGENCY")) {
+        if (arg.equalsIgnoreCase("STOP")) {
+            transformer.emergencyStop();
+            Serial.println("DONE");
+        } else {
+            Serial.println("ERROR,UNKNOWN_EMERGENCY_CMD");
+        }
+    } // other commands...
+}

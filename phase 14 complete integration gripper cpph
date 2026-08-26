@@ -1,0 +1,56 @@
+// esp32/gripper.h
+#ifndef GRIPPER_H
+#define GRIPPER_H
+
+#include <Arduino.h>
+#include <ESP32Servo.h>
+#include "configuration.h"
+
+class Gripper {
+public:
+    Gripper();
+    void begin();
+    bool open();
+    bool close();
+    bool isClosed() const;
+    void emergencyStop();
+private:
+    Servo _servo;
+    int _angle;
+};
+
+#endif
+
+// esp32/gripper.cpp
+#include "gripper.h"
+
+Gripper::Gripper() : _angle(GRIPPER_OPEN_ANGLE) {}
+
+void Gripper::begin() {
+    _servo.setPeriodHertz(50);
+    _servo.attach(GRIPPER_SERVO_PIN, 500, 2400);
+    _servo.write(_angle);
+    delay(150);
+}
+
+bool Gripper::open() {
+    _servo.write(GRIPPER_OPEN_ANGLE);
+    _angle = GRIPPER_OPEN_ANGLE;
+    delay(GRIPPER_STEP_DELAY_MS * 5);
+    return true;
+}
+
+bool Gripper::close() {
+    _servo.write(GRIPPER_CLOSE_ANGLE);
+    _angle = GRIPPER_CLOSE_ANGLE;
+    delay(GRIPPER_STEP_DELAY_MS * 5);
+    return true;
+}
+
+bool Gripper::isClosed() const {
+    return _angle == GRIPPER_CLOSE_ANGLE;
+}
+
+void Gripper::emergencyStop() {
+    _servo.detach();
+}
